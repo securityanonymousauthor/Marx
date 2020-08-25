@@ -221,7 +221,7 @@ const VTable& VTableFile::get_vtable(const std::string &module_name,
     if(!_is_finalized) {
         throw runtime_error("VTableFile object was not finalized.");
     }
-
+    printf("get_vtable addr: %p\n", addr);
     return *(_module_vtables_map.at(module_name)->at(addr));
 
 }

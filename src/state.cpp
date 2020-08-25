@@ -106,6 +106,11 @@ void State::purge_scratch_registers(FileFormatType file_format) {
                 _state.erase(scratch);
             }
             break;
+        case FileFormatMACHO64:
+            for(const auto &scratch : system_v_scratch) {
+                _state.erase(scratch);
+            }
+            break;
         case FileFormatPE64:
             for(const auto &scratch : msvc_scratch) {
                 _state.erase(scratch);

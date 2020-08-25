@@ -31,6 +31,10 @@ Translator::Translator(Vex &vex, const string &file,
         case FileFormatPE64:
             _memory = new MappedPe(file);
             break;
+        case FileFormatMACHO64:
+            _memory = new MappedMachO(file);
+            break;
+
         default:
             throw runtime_error("Format not supported.");
             break;
@@ -78,7 +82,12 @@ bool Translator::process_block(Function &function,
 
     size_t real_end = 0;
 
-    const auto &translated_block = _vex.translate((*_memory)[block.block_start],
+    //printf("block.block_start: %p\n", block.block_start);
+    const uint8_t *bytes = (*_memory)[block.block_start];
+    if(bytes == nullptr){
+        return true;
+    }
+    const auto &translated_block = _vex.translate(bytes,
             block.block_start, block.instruction_count, &real_end);
 
     _seen_blocks.insert(block.block_start);

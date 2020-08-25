@@ -10,7 +10,15 @@ from struct import pack
 from ctypes import c_uint32, c_uint64
 import subprocess
 
-base = get_imagebase()
+import os
+import shutil
+
+import sys
+
+#base = get_imagebase()
+
+base = idc.get_inf_attr(INF_MIN_EA)
+header_base = get_imagebase()
 plt_start, plt_end = 0, 0
 segments = list(Segments())
 
@@ -19,7 +27,9 @@ dump_vtables = True
 vtable_section_names = [".rodata",
     ".data.rel.ro",
     ".data.rel.ro.local",
-    ".rdata"]
+    ".rdata", 
+    "__const"
+    ]
 #pure_virtual_addr = 0x4006D0 # toy example
 #pure_virtual_addr = 0x20106C # libtoy.so (toy example)
 #pure_virtual_addr = None # main (toy example)
@@ -78,6 +88,22 @@ number_allowed_zero_entries = 2
 
 is_linux = None
 is_windows = None
+is_macos = None
+
+
+MARX_CONFIGS_DIRPATH = os.path.join(os.getcwd(), "marx_configs")
+if not os.path.isdir(MARX_CONFIGS_DIRPATH):
+    os.mkdir(MARX_CONFIGS_DIRPATH)
+
+def get_output_filepath_prefix():
+    idb_filepath = idc.get_idb_path()
+    idb_fn = os.path.basename(idb_filepath)
+    prefix = idb_fn[:idb_fn.rfind(".")]
+    configs_dirpath = os.path.join(MARX_CONFIGS_DIRPATH, prefix)
+    if not os.path.isdir(configs_dirpath):
+        os.mkdir(configs_dirpath)
+    return os.path.join(configs_dirpath, prefix)
+
 
 # extracts all relocation entries from the ELF file
 # (needed for vtable location heuristics)
@@ -86,8 +112,12 @@ def get_relocation_entries_gcc64(elf_file):
     relocation_entries = set()
 
     try:
-        result = subprocess.check_output(
-            ['readelf', '--relocs', elf_file])
+        if is_linux:
+            result = subprocess.check_output(
+                ['readelf', '--relocs', elf_file])
+        elif is_macos:
+            result = subprocess.check_output(
+                ['otool', '-r', elf_file])
     except:
         raise Exception("Not able to extract relocation entries.")
 
@@ -162,6 +192,7 @@ def get_vtable_entries_gcc64(vtables_offset_to_top):
             curr_addr += 8
             entry_ctr += 1
             curr_qword = Qword(curr_addr)
+    #print "\n".join("0x{:016X}".format(addr) for addr in vtable_entries.keys())
 
     return vtable_entries
 
@@ -402,6 +433,7 @@ def get_vtable_entries_msvc64(vtables_offset_to_top):
 
 
 def process_function(function):
+    #print "{:016X} {:016X}".format(function, base)
     dump = pack('<I', function - base)
     flow = FlowChart(get_func(function))
     assert len(dump) == 4
@@ -442,21 +474,23 @@ def main():
     assert len(dump) == 8
 
     for segment in segments:
-        if SegName(segment) == '.plt':
+        if SegName(segment) == '.plt' or SegName(segment) == '__stubs':
             plt_start = SegStart(segment)
             plt_end = SegEnd(segment)
             break
+
 
     functions_dump = ''
     function_count = 0
 
     funcs = set()
     for segment in segments:
-        permissions = getseg(segment).perm
-        if not permissions & SEGPERM_EXEC:
+        seg = getseg(segment)
+        permissions = seg.perm
+        if not permissions & SEGPERM_EXEC and seg.type != 2:
             continue
 
-        if SegStart(segment) == plt_start:
+        if SegStart(segment) == plt_start or SegStart(segment) < base:
             continue
 
         print('\nProcessing segment %s.' % SegName(segment))
@@ -477,18 +511,18 @@ def main():
     dump += packed_function_count
     dump += functions_dump
 
-    with open(GetInputFile() + '.dmp', 'wb') as f:
+    with open(output_filepath_prefix + '.dmp', 'wb') as f:
         f.write(dump)
 
     print('\nExported %d functions.' % function_count)
 
     # Export function names.
     counter = 0
-    with open(GetInputFile() + '_funcs.txt', 'w') as f:
+    with open(output_filepath_prefix + '_funcs.txt', 'w') as f:
 
         # Write Module name to file.
         # NOTE: We consider the file name == module name.
-        f.write("%s\n" % GetInputFile())
+        f.write("%s\n" % modulename)
 
         for func in funcs:
             # Ignore functions that do not have a name.
@@ -503,11 +537,11 @@ def main():
 
     # Export function blacklist.
     counter = 0
-    with open(GetInputFile() + '_funcs_blacklist.txt', 'w') as f:
+    with open(output_filepath_prefix + '_funcs_blacklist.txt', 'w') as f:
 
         # Write Module name to file.
         # NOTE: We consider the file name == module name.
-        f.write("%s\n" % GetInputFile())
+        f.write("%s\n" % modulename)
 
         # Blacklist pure virtual function.
         if pure_virtual_addr:
@@ -522,7 +556,7 @@ def main():
     # Export vtables.
     if dump_vtables:
 
-        if is_linux:
+        if is_linux or is_macos:
             vtables_offset_to_top = get_vtables_gcc64()
             vtable_entries = get_vtable_entries_gcc64(vtables_offset_to_top)
 
@@ -533,11 +567,11 @@ def main():
         else:
             raise Exception("Do not know underlying architecture.")
 
-        with open(GetInputFile() + '_vtables.txt', 'w') as f:
+        with open(output_filepath_prefix + '_vtables.txt', 'w') as f:
 
             # Write Module name to file.
             # NOTE: We consider the file name == module name.
-            f.write("%s\n" % GetInputFile())
+            f.write("%s\n" % modulename)
 
             for k in vtables_offset_to_top:
                 f.write("%x %d" % (k, vtables_offset_to_top[k]))
@@ -551,34 +585,44 @@ def main():
         print('\nExported %d vtables.' % len(vtables_offset_to_top))
 
     # Export .plt entries.
-    if dump_vtables and is_linux:
+    if dump_vtables and (is_linux or is_macos):
         counter = 0
-        with open(GetInputFile() + '_plt.txt', 'w') as f:
+        with open(output_filepath_prefix + '_plt.txt', 'w') as f:
 
             # Write Module name to file.
             # NOTE: We consider the file name == module name.
-            f.write("%s\n" % GetInputFile())
+            f.write("%s\n" % modulename)
+            if is_linux:
+                for i, function in enumerate(Functions(plt_start, plt_end)):
 
-            for i, function in enumerate(Functions(plt_start, plt_end)):
+                    # Ignore functions that do not have a name.
+                    func_name = GetFunctionName(function)
+                    if not func_name:
+                        continue
 
-                # Ignore functions that do not have a name.
-                func_name = GetFunctionName(function)
-                if not func_name:
-                    continue
+                    # Names of .plt function start with an ".". Remove it.
+                    f.write("%x %s\n" % (function, func_name[1:]))
+                    counter += 1
+            else:
+                for ea in range(plt_start, plt_end, 8):
+                    func_name = Name(ea)
+                    if not func_name:
+                        continue
 
-                # Names of .plt function start with an ".". Remove it.
-                f.write("%x %s\n" % (function, func_name[1:]))
-                counter += 1
+                    # Names of .plt function start with an ".". Remove it.
+                    f.write("%x %s\n" % (ea, func_name[1:]))
+                    counter += 1
+
         print('\nExported %d .plt entries.' % counter)
 
     # Export .got entries.
-    if dump_vtables and is_linux:
+    if dump_vtables and (is_linux or is_macos):
         counter = 0
-        with open(GetInputFile() + '_got.txt', 'w') as f:
+        with open(output_filepath_prefix + '_got.txt', 'w') as f:
 
             # Write Module name to file.
             # NOTE: We consider the file name == module name.
-            f.write("%s\n" % GetInputFile())
+            f.write("%s\n" % modulename)
 
             curr_addr = got_start
             while curr_addr <= got_end:
@@ -590,11 +634,11 @@ def main():
     # Export .idata entries.
     if dump_vtables and is_windows:
         counter = 0
-        with open(GetInputFile() + '_idata.txt', 'w') as f:
+        with open(output_filepath_prefix + '_idata.txt', 'w') as f:
 
             # Write Module name to file.
             # NOTE: We consider the file name == module name.
-            f.write("%s\n" % GetInputFile())
+            f.write("%s\n" % modulename)
 
             addr = idata_start
             while addr <= idata_end:
@@ -611,6 +655,123 @@ def main():
 
         print('\nExported %d .idata entries.' % counter)
 
+    # extension to copy the binary to the config dir
+    shutil.copy(GetInputFilePath(), output_filepath_prefix)
+    generate_config_file()
+
+
+config_file_template = "\
+MODULENAME {}\n\
+TARGETDIR {}/ \n\
+FORMAT MACHO64 \n\
+NEWOPERATORS {} {}\n\
+EXTERNALMODULES {} {}\n"
+
+import sys
+import os
+import subprocess
+import argparse
+import plistlib
+
+def getInfoFromInfoPlist(plistFilePath):
+    bundleExec = None
+    bundleId = None
+    plist = plistlib.readPlist(plistFilePath)
+    if "CFBundleIdentifier" not in plist:
+        print plistFilePath
+    return plist["CFBundleExecutable"] if "CFBundleExecutable" in plist else None, plist["CFBundleIdentifier"].replace(" ", "") if "CFBundleIdentifier" in plist else None, plist["OSBundleLibraries"] if "OSBundleLibraries" in plist else {}
+
+def isMachOFile(filePath):
+    if not None is filePath:
+        f = open(filePath, "r")
+        header = f.read(4)
+        if header in ["\xcf\xfa\xed\xfe", "\xca\xfe\xba\xbe"]:
+            return True
+    return False
+
+
+def getInfoFromKEXT(kextPath, idbDirPath=None):
+    infoPlistFilePath = os.path.join(kextPath, "Contents/Info.plist")
+    if os.path.isfile(infoPlistFilePath):
+        CFBundleExecutable, CFBundleIdentifier, OSBundleLibraries = getInfoFromInfoPlist(infoPlistFilePath)
+    else:
+        return None
+    macOSDirPath = kextPath
+    for macOSDirPathRoot, binDirs, binFiles in os.walk(macOSDirPath):
+        for binFileName in binFiles:
+            if binFileName == CFBundleExecutable:
+                binFilePath = os.path.join(macOSDirPathRoot, binFileName)
+                if isMachOFile(binFilePath):
+                    idbFilePathWOSuffix = os.path.join(idbDirPath, CFBundleIdentifier).replace(" ", "\\ ") if not None is idbDirPath else None
+                    deps = OSBundleLibraries.keys()
+                    for dep in list(deps):
+                        if dep.startswith("com.apple.kpi."):
+                            deps.remove(dep)
+                    binFilePath = binFilePath.replace(" ", "\\ ")
+                    return binFilePath, idbFilePathWOSuffix, CFBundleIdentifier, deps
+    return None
+
+def getDepsOfKEXT(fp):
+    dp = os.path.dirname(fp)
+    if dp.endswith("/Contents/MacOS"):
+        kextPath = dp[:-len("/Contents/MacOS")]
+    else:
+        kextPath = fp
+    kextInfo = getInfoFromKEXT(kextPath)
+    if not None is kextInfo:
+        return kextInfo[3]
+
+    return [] 
+
+def generate_config_file():
+    new_ops = find_new_ops()
+    dir_path = os.path.dirname(output_filepath_prefix)
+    fn = os.path.basename(dir_path)
+    root_fn = get_root_filename()
+    if not root_fn.startswith("kernel"):
+        dep_bundleids = getDepsOfKEXT(GetInputFilePath())
+        deps = set()
+        for bundleid in dep_bundleids:
+            if not bundleid.startswith("com.apple.kpi.") and \
+                os.path.exists(os.path.join(MARX_CONFIGS_DIRPATH, bundleid)) and \
+                os.path.exists(os.path.join(MARX_CONFIGS_DIRPATH, bundleid, bundleid + ".hierarchy")):
+                deps.add(os.path.join(MARX_CONFIGS_DIRPATH, bundleid, bundleid))
+                dep_cfg_fp = os.path.join(MARX_CONFIGS_DIRPATH, bundleid + ".cfg")
+                with open(dep_cfg_fp, "r") as fp:
+                    dep_cfg_lines = fp.read().splitlines()
+                    for line in dep_cfg_lines:
+                        if line.startswith("EXTERNALMODULES"):
+                            line_splits = line.split(" ")
+                            deps.update(set(line_splits[2:]))
+                            break
+        
+        deps.add(os.path.join(MARX_CONFIGS_DIRPATH, "kernel.dev", "kernel.dev"))
+    else:
+        deps = set()
+    config_file_content = config_file_template.format(\
+            fn, dir_path, \
+            len(new_ops), " ".join(["{:16X}".format(ea) for ea in new_ops]), \
+            len(deps), " ".join(deps)
+            )
+    config_filepath = dir_path + ".cfg"
+    with open(config_filepath, "w") as fp:
+        fp.write(config_file_content)
+
+def find_new_ops():
+    new_ops = set()
+    for ea, name in Names():
+        deName = Demangle(name, 0)
+        if not None is deName and "operator new(" in deName:
+            new_ops.add(ea)
+    return new_ops
+
+init_seg = get_segm_by_name("__mod_init_func")
+if None is init_seg:
+    print "[!] No __mod_init_func"
+    idc.Exit(0)
+
+output_filepath_prefix = get_output_filepath_prefix()
+modulename = os.path.basename(output_filepath_prefix)
 
 info = get_inf_structure()
 if not info.is_64bit():
@@ -619,9 +780,16 @@ if not info.is_64bit():
 if info.ostype == idc.OSTYPE_WIN and info.filetype == 11:
     is_windows = True
     is_linux = False
+    is_macos = False
 elif info.ostype == 0 and info.filetype == 18:
     is_windows = False
     is_linux = True
+    is_macos = False
+elif info.ostype == 0 and info.filetype == 25:
+    # extension to support macho
+    is_windows = False
+    is_linux = False
+    is_macos = True
 else:
     raise Exception("OS type not supported.")
 
@@ -648,29 +816,33 @@ if dump_vtables:
             extern_seg = segment
             extern_start = SegStart(extern_seg)
             extern_end = SegEnd(extern_seg)
-        elif SegName(segment) == ".text":
+        elif (SegName(segment) == ".text" or SegName(segment) == "__text") and SegStart(segment) > header_base and text_start == 0: # Only the first text segment after header is considered text segment
             text_seg = segment
             text_start = SegStart(text_seg)
             text_end = SegEnd(text_seg)
-        elif SegName(segment) == ".plt":
+        elif SegName(segment) == ".plt" or SegName(segment) == "UNDEF" :
             plt_seg = segment
             plt_start = SegStart(plt_seg)
             plt_end = SegEnd(plt_seg)
-        elif SegName(segment) == ".got":
+        elif SegName(segment) == ".got" or SegName(segment) == "__got":
             got_seg = segment
             got_start = SegStart(got_seg)
             got_end = SegEnd(got_seg)
-        elif SegName(segment) == ".idata":
+        elif SegName(segment) == ".idata" or SegName(segment) == "__data":
             idata_seg = segment
             idata_start = SegStart(idata_seg)
             idata_end = SegEnd(idata_seg)
         elif SegName(segment) in vtable_section_names:
             vtable_sections.append(segment)
 
-    if is_linux:
+    if is_linux or is_macos:
         relocation_entries = get_relocation_entries_gcc64(GetInputFilePath())
 
 if __name__ == '__main__':
     if pure_virtual_addr:
         print("pure_virtual function at 0x%x" % pure_virtual_addr)
+
     main()
+
+    print "[+] Exit"
+    idc.Exit(0)

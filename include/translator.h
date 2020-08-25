@@ -13,6 +13,7 @@
 #include "dump_file.h"
 #include "mapped_elf.h"
 #include "mapped_pe.h"
+#include "mapped_macho.h"
 #include "memory.h"
 
 extern "C" {

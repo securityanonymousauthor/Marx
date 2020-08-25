@@ -247,6 +247,9 @@ void analyze_fct(const string &module_name,
                         case FileFormatELF64:
                             reg_ptr = State::initial_values().at(OFFB_RDI);
                             break;
+                        case FileFormatMACHO64:
+                            reg_ptr = State::initial_values().at(OFFB_RDI);
+                            break;
                         // => set RCX to contain active vtable.
                         case FileFormatPE64:
                             reg_ptr = State::initial_values().at(OFFB_RCX);
@@ -449,6 +452,9 @@ void playground(const string &config_file) {
             else if(file_format_str == "ELF64") {
                 file_format = FileFormatELF64;
             }
+            else if(file_format_str == "MACHO64") {
+                file_format = FileFormatMACHO64;
+            } 
             else {
                 throw runtime_error("Format not known.");
             }
@@ -489,6 +495,14 @@ void playground(const string &config_file) {
                                     + target_file + ".");
             }
             break;
+        case FileFormatMACHO64:
+            // Import all plt entries.
+            if(!module_plt.parse(target_file)) {
+                throw runtime_error("Cannot parse module plt file "
+                                    + target_file + ".");
+            }
+            break;
+
         case FileFormatPE64:
             break;
         default:
@@ -522,6 +536,7 @@ void playground(const string &config_file) {
                                          funcs_blacklist,
                                          -1);
     for(const auto &it : ext_modules) {
+        cout << "import_hierarchy: " << it << endl;
         vtable_hierarchies.import_hierarchy(it);
     }
 
@@ -574,6 +589,9 @@ void playground(const string &config_file) {
         case FileFormatELF64:
             got_map = import_got(target_file);
             break;
+        case FileFormatMACHO64:
+            got_map = import_got(target_file);
+            break;
         case FileFormatPE64:
             idata_map = import_idata(target_file);
             break;
@@ -609,7 +627,7 @@ void playground(const string &config_file) {
     }
     */
 
-    map<uint64_t, Function> temp = translator.get_functions();
+    const map<uintptr_t, Function> temp = translator.get_functions();
 
     const VTableMap &this_vtables = vtable_file.get_this_vtables();
     AnalysisObjects analysis_obj(file_format,
@@ -749,8 +767,43 @@ void playground(const string &config_file) {
 }
 
 
+
 void handle_exception(const char *message) {
     cerr << "Exception occurred: " << message << endl;
+}
+
+#include <iostream>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <typeinfo>
+#include <string>
+#include <memory>
+#include <cxxabi.h>
+#include <cstdlib>
+
+namespace {
+  void * last_frames[20];
+  size_t last_size;
+  std::string exception_name;
+
+  std::string demangle(const char *name) {
+    int status;
+    std::unique_ptr<char,void(*)(void*)> realname(abi::__cxa_demangle(name, 0, 0, &status), &std::free);
+    return status ? "failed" : &*realname;
+  }
+}
+
+extern "C" {
+  void __cxa_throw(void *ex, std::type_info *info,
+            void (*dest)(void *)) {
+   //void __cxa_throw(void *ex, void *info, void (*dest)(void *)) {
+    exception_name = demangle(reinterpret_cast<const std::type_info*>(info)->name());
+    last_size = backtrace(last_frames, sizeof last_frames/sizeof(void*));
+
+    //static void (*const rethrow)(void*,void*,void(*)(void*)) __attribute__ ((noreturn)) = (void (*)(void*,void*,void(*)(void*)))dlsym(RTLD_NEXT, "__cxa_throw");
+    static void (*const rethrow)(void*,void*,void(*)(void*)) = (void (*)(void*,void*,void(*)(void*)))dlsym(RTLD_NEXT, "__cxa_throw");
+    rethrow(ex,info,dest);
+  }
 }
 
 
@@ -768,6 +821,7 @@ int main(int argc, char* argv[]) {
         playground(argv[1]);
     } catch(const exception &e) {
         handle_exception(e.what());
+        backtrace_symbols_fd(last_frames, last_size, 2);
     }
 
     return 0;

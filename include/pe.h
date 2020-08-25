@@ -19,7 +19,7 @@
 #ifndef __LINUX_PE_H
 #define __LINUX_PE_H
 
-#include <linux/types.h>
+//#include <linux/types.h>
 
 #define MZ_MAGIC	0x5a4d	/* "MZ" */
 

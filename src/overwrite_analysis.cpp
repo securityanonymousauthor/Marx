@@ -63,6 +63,9 @@ OverwriteAnalysis::OverwriteAnalysis(Translator &translator,
         case FileFormatELF64: // => set RDI to be a this ptr candidate
             add_this_candidate(State::initial_values().at(OFFB_RDI));
             break;
+        case FileFormatMACHO64: // => set RDI to be a this ptr candidate
+            add_this_candidate(State::initial_values().at(OFFB_RDI));
+            break;    
         case FileFormatPE64: // => set RCX to be a this ptr candidate
             add_this_candidate(State::initial_values().at(OFFB_RCX));
             break;
@@ -213,6 +216,8 @@ void OverwriteAnalysis::path_traversed(const Path &path) {
 // constant, or a call to a new operator.
 bool OverwriteAnalysis::block_predicate(const Block &block) {
 
+    //printf("_block_cache_true: %p\n", _block_cache_true);
+
     // check if address of block is cached
     auto end_true  = _block_cache_true.cend();
     auto end_false = _block_cache_false.cend();
@@ -319,6 +324,31 @@ void OverwriteAnalysis::import_external_vtable_updates(
                 bool found = false;
                 switch(_file_format) {
                     case FileFormatELF64: {
+                        for(uint32_t i = 0; i < NUMBER_SYSTEM_V_ARGS; i++) {
+                            if(*it.base == *_system_v_arguments_init[i]) {
+                                State::const_iterator arg_value;
+                                if(state.find(system_v_arguments[i],
+                                              arg_value)) {
+                                    ext_update.base =
+                                                     arg_value->second->clone();
+                                    ext_update.index = it.index;
+                                    ext_update.offset = it.offset;
+                                    found = true;
+                                    break;
+                                }
+                                else {
+                                    throw runtime_error("External functions "\
+                                                        "overwrites vtable in "\
+                                                        "an object residing "\
+                                                        "in a register which "\
+                                                        "is not set by "\
+                                                        "caller.");
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case FileFormatMACHO64: {
                         for(uint32_t i = 0; i < NUMBER_SYSTEM_V_ARGS; i++) {
                             if(*it.base == *_system_v_arguments_init[i]) {
                                 State::const_iterator arg_value;
@@ -454,6 +484,9 @@ inline void OverwriteAnalysis::handle_new_operator(const Block &block,
         shared_ptr<Register> first_arg_reg_ptr;
         switch(_file_format) {
             case FileFormatELF64:
+                first_arg_reg_ptr = system_v_arguments[0];
+                break;
+            case FileFormatMACHO64:
                 first_arg_reg_ptr = system_v_arguments[0];
                 break;
             case FileFormatPE64:
@@ -861,6 +894,11 @@ uint64_t OverwriteAnalysis::get_used_table_entry(const ExpressionPtr &exp) {
                         return temp.value();
                     }
                     break;
+                case FileFormatMACHO64:
+                    if(_got_map.find(temp.value()) != _got_map.cend()) {
+                        return temp.value();
+                    }
+                    break;
                 case FileFormatPE64:
                     if(_idata_map.find(temp.value()) != _idata_map.cend()) {
                         return temp.value();
@@ -914,7 +952,7 @@ bool OverwriteAnalysis::in_traversal(const Path &path,
 
     // Replace indirections to .got entries with their content
     // (obviously only when we analyze ELF binaries).
-    if(_file_format == FileFormatELF64) {
+    if(_file_format == FileFormatELF64 || _file_format == FileFormatMACHO64) {
         bool state_changed = false;
         for(const auto &kv : memory) {
             // Ignore all constants.
@@ -1151,6 +1189,9 @@ void OverwriteAnalysis::handle_indirect_call(const Path &path,
         shared_ptr<Register> this_arg_ptr;
         switch(_file_format) {
             case FileFormatELF64:
+                this_arg_ptr = system_v_arguments[0];
+                break;
+            case FileFormatMACHO64:
                 this_arg_ptr = system_v_arguments[0];
                 break;
             case FileFormatPE64:

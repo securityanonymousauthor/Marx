@@ -399,6 +399,9 @@ void VTableHierarchies::update_hierarchy(const VTableUpdates &vtable_updates,
                 case FileFormatELF64:
                     reg_ptr = State::initial_values().at(OFFB_RDI);
                     break;
+                case FileFormatMACHO64:
+                    reg_ptr = State::initial_values().at(OFFB_RDI);
+                    break;
                 // => set RCX to contain active vtable.
                 case FileFormatPE64:
                     reg_ptr = State::initial_values().at(OFFB_RCX);

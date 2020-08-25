@@ -7,6 +7,7 @@
 enum FileFormatType {
     FileFormatELF64 = 0,
     FileFormatPE64 = 1,
+    FileFormatMACHO64 = 2,
     FileFormatCount
 };
 
